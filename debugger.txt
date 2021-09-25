@@ -1,1 +1,2 @@
+loadbin /home/jonathan/deathbringer-ste/draw_blitter_ground.bin 0x80000
 loadbin /home/jonathan/deathbringer-ste/cc02_redirect.bin 0xcc02
