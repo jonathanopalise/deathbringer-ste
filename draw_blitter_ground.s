@@ -1,55 +1,78 @@
     ORG $80000
 
 draw_blitter_ground_super_wrapper:
-    move.l a0,a0_backup
-    move.l a1,a1_backup
-    move.l a2,a2_backup
-    move.l d0,d0_backup
-    move.l d1,d1_backup
-    move.l d2,d2_backup
+    ; Deathbringer seems to run in the 68000's user mode for the most part, including at the point where the ground
+    ; is normally drawn. If we try to write to the Blitter registers when in user mode, we'll crash the machine. We
+    ; therefore need to temporarily switch to supervisor mode in order to draw the ground using the Blitter.
 
-    pea draw_blitter_ground
+    movem.l a0-a2/d0-d2,regs_backup      ; backup registers before switching to supervisor mode
+
+    pea draw_blitter_ground              ; xbios call to call draw_blitter_ground subroutine in supervisor mode
     move.w #$26,-(sp)
     trap #14
     addq.l #6,sp
-    rts
+    rts                                  ; return to main (unmodified) body of game code
 
-a0_backup:
-    dc.l 0
-a1_backup:
-    dc.l 0
-a2_backup:
-    dc.l 0
-d0_backup:
-    dc.l 0
-d1_backup:
-    dc.l 0
-d2_backup:
-    dc.l 0
+regs_backup:
+    ds.l 6                               ; 6 long words of storage for backup of regs during supervisor mode switch
 
 draw_blitter_ground:
-    move.l a0_backup,a0
-    move.l a1_backup,a1
-    move.l a2_backup,a2
-    move.l d0_backup,d0
-    move.l d1_backup,d1
-    move.l d2_backup,d2
+    movem.l regs_backup,a0-a2/d0-d2      ; restore registers following switch to supervisor mode
 
-    ; init blitter
+    ; First, set up all of the blitter registers. For many of the registers, we only need to do this once, and we can
+    ; then perform multiple blits.
+    ; 
+    ; The Blitter works roughly as follows:
+    ;
+    ; for (y = 0; y < x_count; y++) {
+    ;     for (x = 0; x < x_count; x++) {
+    ;         transfer word from source_address to destination_address
+    ;         source_address += source_x_increment;
+    ;         destination_address += dest_x_increment;
+    ;     }
+    ;     source_address += source_y_increment;
+    ;     destination_address += destination_x_increment;
+    ; }
+    ;
+    ; As part of this initial setup, we're setting the following registers:
+    ;
+    ; source_x_increment 8a20:
+    ;   how many bytes to add to the source address after writing each word. We set to 6 because we're drawing one
+    ;   bitplane at a time, and the source data contains 3 bitplanes.
+    ;
+    ; source_y_increment 8a22:
+    ;   how many bytes to add to the source address after writing each line. We decrement by 118 as this returns the
+    ;   source address to the start of the source data for the next bitplane once a line has been drawn, meaning that
+    ;   the source address is in the correct place ready for the next bitplane to be drawn
+    ;
+    ; endmask1 8a28/endmask2 8a2a/endmask3 8a2c:
+    ;   masking for the beginning, middle and end of each line. Leaving all three values at $ffff means that no source
+    ;   values get masked out when drawing to the screen. 
+    ;
+    ; dest_x_increment 8a2e:
+    ;   how many bytes to add to the destination address after writing each word. We set this to 8 because we're
+    ;   drawing one bitplane at a time on a four bitplane back buffer.
+    ;
+    ; dest_y_increment 8a30:
+    ;   how many bytes to add to the destination address after writing each line
+    ;
+    ; x_count 8a36:
+    ;   how many words to draw on each line
+
     lea $ffff8a20.w,a3
-    move.w #6,(a3)+            ; source x increment 8a20
-    move.w #-118,(a3)          ; source y increment 8a22
-    addq.l #6,a3               ; skip source address 8a24 - we'll set it later
-    move.w #-1,(a3)+           ; endmask1 8a28
-    move.w #-1,(a3)+           ; endmask2 8a2a
-    move.w #-1,(a3)+           ; endmask3 8a2c
-    move.w #8,(a3)+            ; dest x increment 8a2e
-    move.w #-150,(a3)          ; dest y increment 8a30
-    addq.l #6,a3               ; skip dest address 8a32 - we'll set it later
-    move.w #20,(a3)            ; xcount 8a36 - 20 words is one line in one bitplane
-    addq.l #4,a3               ; skip ycount 8a38 - we'll set it later
+    move.w #6,(a3)+                      ; source x increment 8a20
+    move.w #-118,(a3)                    ; source y increment 8a22
+    addq.l #6,a3                         ; skip source address 8a24 - we'll set it later
+    move.w #$ffff,(a3)+                  ; endmask1 8a28
+    move.w #$ffff,(a3)+                  ; endmask2 8a2a
+    move.w #$ffff,(a3)+                  ; endmask3 8a2c
+    move.w #8,(a3)+                      ; dest x increment 8a2e
+    move.w #-150,(a3)                    ; dest y increment 8a30
+    addq.l #6,a3                         ; skip dest address 8a32 - we'll set it later
+    move.w #20,(a3)                      ; xcount 8a36 - 20 words is one line in one bitplane
+    addq.l #4,a3                         ; skip ycount 8a38 - we'll set it later
 
-    moveq.l #$23,d7            ; draw 23 lines of ground
+    moveq.l #$23,d7                      ; use d7 as counter - we're going to draw 23 lines of ground
 
 draw_ground_line:
 
@@ -84,16 +107,27 @@ draw_ground_line:
     adda.w    d0,a3
     andi.w    #$f,d5
 
-    ; now draw 3 bitplanes from source a4 to destination a1
-    ; d5 contains skew value
-
+    ; Now that we know where we need to copy data from, and how many pixels to skew to the right, we need to populate
+    ; Blitter registers accordingly and start the blit.
+    ;
+    ; We perform 
+    ; source_x_increment 8a20:
+    ;   how many bytes to add to the source address after writing each word. We set to 6 because we're drawing one
+    ;   bitplane at a time, and the source data contains 3 bitplanes.
+    ;
+    ; source_y_increment 8a22:
+    ;   how many bytes to add to the source address after writing each line. We decrement by 118 as this returns the
+    ;   source address to the start of the source data for the next bitplane once a line has been drawn, meaning that
+    ;   the source address is in the correct place ready for the next bitplane to be drawn
+ 
     move.l a3,$ffff8a24.w      ; source address 8a24
     move.l a1,$ffff8a32.w      ; destination address 8a32
-    or.w #$c080,d5             ; generate a value for control 8a3c - hog mode, fxsr + skew from d5
+    or.b #$80,d5               ; generate a value for skew 8a3d - fxsr combined with d5 skew value from above
+    move.b d5,$ffff8a3d.w      ; skew 8a3d - set skew and activate fxsr
 
     macro fill_bitplane        ; define macro to set ycount to 1 line and start the blitter
     move.w #1,$ffff8a38.w      ; ycount 8a38 - draw one line
-    move.w d5,$ffff8a3c.w      ; control 8a3c - start blitter
+    move.b #$c0,$ffff8a3c.w    ; control 8a3c - start blitter in hog mode
     endm
 
     move.w #$0203,$ffff8a3a.w  ; hop/op 8a3a - set blitter to copy from source to destination
