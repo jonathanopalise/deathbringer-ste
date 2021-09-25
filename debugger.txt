@@ -1,0 +1,1 @@
+loadbin /home/jonathan/deathbringer-ste/cc02_redirect.bin 0xcc02
