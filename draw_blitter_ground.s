@@ -1,4 +1,4 @@
-    ORG $80000
+    ORG $80000 ; tell the assembler that this code is intended to be located at address $80000
 
 draw_blitter_ground_super_wrapper:
     ; Deathbringer seems to run in the 68000's user mode for the most part, including at the point where the ground
@@ -22,42 +22,49 @@ draw_blitter_ground:
     ; First, set up all of the blitter registers. For many of the registers, we only need to do this once, and we can
     ; then perform multiple blits.
     ; 
-    ; The Blitter works roughly as follows:
+    ; The Blitter seems to work roughly as follows:
     ;
-    ; for (y = 0; y < x_count; y++) {
-    ;     for (x = 0; x < x_count; x++) {
-    ;         transfer word from source_address to destination_address
-    ;         source_address += source_x_increment;
-    ;         destination_address += dest_x_increment;
+    ; for (y = 1; y <= y_count; y++) {
+    ;     for (x = 1; x <= x_count; x++) {
+    ;         transfer word from source_address to destination_address using selected hop/op
+    ;         if (x == x_count) {
+    ;             source_address += source_x_increment;
+    ;             destination_address += dest_x_increment;
+    ;         } else {
+    ;             source_address += source_y_increment;
+    ;             destination_address += dest_y_increment;
+    ;         }
     ;     }
-    ;     source_address += source_y_increment;
-    ;     destination_address += destination_x_increment;
     ; }
     ;
     ; As part of this initial setup, we're setting the following registers:
     ;
     ; source_x_increment 8a20:
     ;   how many bytes to add to the source address after writing each word. We set to 6 because we're drawing one
-    ;   bitplane at a time, and the source data contains 3 bitplanes.
+    ;   bitplane at a time, and the source data contains 3 interleaved bitplanes.
     ;
     ; source_y_increment 8a22:
     ;   how many bytes to add to the source address after writing each line. We decrement by 118 as this returns the
     ;   source address to the start of the source data for the next bitplane once a line has been drawn, meaning that
-    ;   the source address is in the correct place ready for the next bitplane to be drawn
+    ;   the source address is in the correct place ready for the next bitplane to be drawn.
     ;
     ; endmask1 8a28/endmask2 8a2a/endmask3 8a2c:
     ;   masking for the beginning, middle and end of each line. Leaving all three values at $ffff means that no source
-    ;   values get masked out when drawing to the screen. 
+    ;   values get masked out when writing to the destination.
     ;
     ; dest_x_increment 8a2e:
     ;   how many bytes to add to the destination address after writing each word. We set this to 8 because we're
-    ;   drawing one bitplane at a time on a four bitplane back buffer.
+    ;   drawing one bitplane at a time on a destination containing 4 interleaved bitplanes.
     ;
     ; dest_y_increment 8a30:
-    ;   how many bytes to add to the destination address after writing each line
+    ;   how many bytes to add to the destination address after writing each line. We set this to decrement by 150 as
+    ;   this returns the destination address to the correct location for the next bitplane once a bitplane has been
+    ;   drawn.
     ;
     ; x_count 8a36:
-    ;   how many words to draw on each line
+    ;   how many words to transfer from the source to the destination on each line. We set this to 20 as we'll be
+    ;   drawing 20 words (40 bytes) in each of the 4 destination bitplanes, giving a total 160 bytes, which is the
+    ;   number of bytes in a single line of the ST's screen buffer.
 
     lea $ffff8a20.w,a3
     move.w #6,(a3)+                      ; source x increment 8a20
@@ -70,14 +77,23 @@ draw_blitter_ground:
     move.w #-150,(a3)                    ; dest y increment 8a30
     addq.l #6,a3                         ; skip dest address 8a32 - we'll set it later
     move.w #20,(a3)                      ; xcount 8a36 - 20 words is one line in one bitplane
-    addq.l #4,a3                         ; skip ycount 8a38 - we'll set it later
+
+    ; As with the original code, we need a loop to draw 35 lines. The d7 register will track the number of lines
+    ; remaining.
+    ;
+    ; Note that at this point, the original game code has set the a1 register as the destination address at which
+    ; we need to start drawing the ground. The a2 register contains the address of the data needed to determine the
+    ; horizontal scroll position of each line we'll be drawing.
 
     moveq.l #$23,d7                      ; use d7 as counter - we're going to draw 23 lines of ground
 
 draw_ground_line:
 
-    ; Note that this following block of 12 lines is mostly taken from the original game code. The purpose of this code
-    ; is to determine two things:
+    ; This is the start of the code that draws each line of the ground.
+    ;
+    ; Note that this following block of 12 lines is mostly taken from the original game code. We don't need to have
+    ; an in-depth understanding of how this code works - we just need to know that it's purpose is to determine two
+    ; things:
     ;
     ; 1) The source start address in memory that we'll be copying graphics data from for this line
     ;
@@ -94,53 +110,46 @@ draw_ground_line:
     ;    resulting Skew value as generated by this code is placed in the d5 register, ready to be dropped into the
     ;    Skew register 8a3d further down.
 
-    move.w    (a2)+,d0
-    add.w     (a2)+,d0
-    move.w    d0,d5
-    not.w     d5
-    lsr.w     #4,d0
-    move.w    d0,d1
-    add.w     d0,d0
-    add.w     d1,d0
-    add.w     d0,d0
-    movea.l   (a0)+,a3
-    adda.w    d0,a3
-    andi.w    #$f,d5
+    move.w (a2)+,d0
+    add.w (a2)+,d0
+    move.w d0,d5
+    not.w d5
+    lsr.w #4,d0
+    move.w d0,d1
+    add.w d0,d0
+    add.w d1,d0
+    add.w d0,d0
+    move.l (a0)+,a3
+    add.w d0,a3
+    and.w #$f,d5
 
     ; Now that we know where we need to copy data from, and how many pixels to skew to the right, we need to populate
     ; Blitter registers accordingly and start the blit.
     ;
-    ; We perform 
-    ; source_x_increment 8a20:
-    ;   how many bytes to add to the source address after writing each word. We set to 6 because we're drawing one
-    ;   bitplane at a time, and the source data contains 3 bitplanes.
+    ; The source data contains three bitplanes, and we're writing to a destination buffer that contains four
+    ; bitplanes. We therefore perform two seperate Blitter passes. The first pass copies three bitplanes (lines) of 
+    ; source data to the corresponding bitplanes in the destination, and the second sets the fourth bitplane of the
+    ; destination to all ones.
     ;
-    ; source_y_increment 8a22:
-    ;   how many bytes to add to the source address after writing each line. We decrement by 118 as this returns the
-    ;   source address to the start of the source data for the next bitplane once a line has been drawn, meaning that
-    ;   the source address is in the correct place ready for the next bitplane to be drawn
+    ; Once both Blitter passes have completed (i.e. we've managed to draw 320 pixels), we advance the destination
+    ; pointer (a1) to the next line, and decrement the line counter (d7). If no further lines need to be drawn, we
+    ; return back to the code that called this subroutine.
  
     move.l a3,$ffff8a24.w      ; source address 8a24
     move.l a1,$ffff8a32.w      ; destination address 8a32
     or.b #$80,d5               ; generate a value for skew 8a3d - fxsr combined with d5 skew value from above
-    move.b d5,$ffff8a3d.w      ; skew 8a3d - set skew and activate fxsr
+    move.b d5,$ffff8a3d.w      ; skew 8a3d
 
-    macro fill_bitplane        ; define macro to set ycount to 1 line and start the blitter
-    move.w #1,$ffff8a38.w      ; ycount 8a38 - draw one line
-    move.b #$c0,$ffff8a3c.w    ; control 8a3c - start blitter in hog mode
-    endm
-
+    move.w #3,$ffff8a38.w      ; ycount 8a38 - draw 3 lines (i.e. 3 bitplanes)
     move.w #$0203,$ffff8a3a.w  ; hop/op 8a3a - set blitter to copy from source to destination
-    fill_bitplane              ; copy into bitplane 1 using source data
-    fill_bitplane              ; copy into bitplane 2 using source data
-    fill_bitplane              ; copy into bitplane 3 using source data
+    move.b #$c0,$ffff8a3c.w    ; control 8a3c - start blitter in hog mode
+
+    move.w #1,$ffff8a38.w      ; ycount 8a38 - draw one line (i.e. 4th and final bitplane)
     move.w #$f,$ffff8a3a.w     ; hop/op 8a38 - set blitter to write all 1's for bitplane 4
-    fill_bitplane              ; write all 1's into bitplane 4
+    move.b #$c0,$ffff8a3c.w    ; control 8a3c - start blitter in hog mode
 
     lea 160(a1),a1             ; advance destination address by one line
 
     dbra d7,draw_ground_line   ; loop around to start drawing the next line
-    rts       
-
-
+    rts
 
