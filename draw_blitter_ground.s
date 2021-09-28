@@ -134,6 +134,10 @@ draw_ground_line:
     ; Once both Blitter passes have completed (i.e. we've managed to draw 320 pixels), we advance the destination
     ; pointer (a1) to the next line, and decrement the line counter (d7). If no further lines need to be drawn, we
     ; return back to the code that called this subroutine.
+    ;
+    ; Note that the only Blitter registers that must be reinitialised to start a Blitter pass are ycount 8a38 (to
+    ; set the number of lines) and control 8a3c (to actually start the transfer) - the Blitter will act upon the
+    ; existing value of all other registers.
  
     move.l a3,$ffff8a24.w      ; source address 8a24
     move.l a1,$ffff8a32.w      ; destination address 8a32
