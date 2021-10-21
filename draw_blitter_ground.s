@@ -85,7 +85,7 @@ draw_blitter_ground:
     ; we need to start drawing the ground. The a2 register contains the address of the data needed to determine the
     ; horizontal scroll position of each line we'll be drawing.
 
-    moveq.l #$23,d7                      ; use d7 as counter - we're going to draw 23 lines of ground
+    moveq.l #$23,d7                      ; use d7 as counter - we're going to draw 35 lines of ground
 
 draw_ground_line:
 
@@ -97,9 +97,9 @@ draw_ground_line:
     ;
     ; 1) The source start address in memory that we'll be copying graphics data from for this line
     ;
-    ;    This address will be a multiple of 8, as the planar graphics arrangement on the ST arranges pixels in blocks
-    ;    of pixels, and each pixel takes up half a byte or 4 bits. The resulting value is placed in the a3 register,
-    ;    ready to be dropped into the Blitter destination register 8a32 further down.
+    ;    This address will be a multiple of 8, as the planar graphics arrangement on the ST arranges screen data in
+    ;    blocks of 16 pixels, and each pixel takes up half a byte or 4 bits. The resulting value is placed in the a3
+    ;    register, ready to be dropped into the Blitter destination register 8a32 further down.
     ;
     ; 2) The number of pixels that we'll need to skew the source data to the right before writing it to the
     ;    destination
